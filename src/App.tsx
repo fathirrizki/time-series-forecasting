@@ -66,55 +66,101 @@ export default function App() {
 
   // Reference for debouncing API requests
   const apiDebounceRef = useRef<NodeJS.Timeout | null>(null);
+  const abortControllerRef = useRef<AbortController | null>(null);
 
-  // Fetch prediction values from custom API
-  const fetchPredictions = async (currentInputs: PredictionInput, useDebounce = true) => {
+  const fetchPredictions = async (
+    currentInputs: PredictionInput,
+    useDebounce = true
+  ) => {
     setIsPredicting(true);
+
     if (apiDebounceRef.current) {
       clearTimeout(apiDebounceRef.current);
     }
 
     const performFetch = async () => {
       try {
+        // batalkan request lama jika masih berjalan
+        if (abortControllerRef.current) {
+          abortControllerRef.current.abort();
+        }
+
+        const controller = new AbortController();
+        abortControllerRef.current = controller;
+
         const res = await fetch("/api/predict", {
           method: "POST",
           headers: {
-            "Content-Type": "application/json",
+            "Content-Type": "application/json"
           },
           body: JSON.stringify(currentInputs),
+          signal: controller.signal
         });
-        if (res.ok) {
-          const data: PredictionResponse = await res.json();
-          setPredictionData(data);
-        } else {
-          console.error("Prediction API returned error");
+
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(
+            data?.error ||
+            data?.message ||
+            "Prediction API error"
+          );
         }
-      } catch (err) {
-        console.error("Network error fetching predictions:", err);
+
+        setPredictionData(data);
+
+      } catch (err: any) {
+
+        // abaikan abort normal
+        if (err.name === "AbortError") {
+          return;
+        }
+
+        console.error(
+          "Prediction fetch error:",
+          err.message
+        );
+
       } finally {
         setIsPredicting(false);
       }
     };
 
     if (useDebounce) {
-      apiDebounceRef.current = setTimeout(performFetch, 600);
+      apiDebounceRef.current = setTimeout(
+        performFetch,
+        600
+      );
     } else {
       await performFetch();
     }
   };
 
-  // Sync initial calculation
   useEffect(() => {
     fetchPredictions(inputs, false);
+
     return () => {
-      if (apiDebounceRef.current) clearTimeout(apiDebounceRef.current);
+      if (apiDebounceRef.current) {
+        clearTimeout(apiDebounceRef.current);
+      }
+
+      if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+      }
     };
   }, []);
 
-  // Update input parameters and fetch updated prediction
-  const handleInputChange = (key: keyof PredictionInput, value: any) => {
-    const updated = { ...inputs, [key]: value };
+  const handleInputChange = (
+    key: keyof PredictionInput,
+    value: any
+  ) => {
+    const updated = {
+      ...inputs,
+      [key]: value
+    };
+
     setInputs(updated);
+
     fetchPredictions(updated, true);
   };
 
