@@ -4,171 +4,271 @@ import dotenv from "dotenv";
 import { GoogleGenAI } from "@google/genai";
 import { createServer as createViteServer } from "vite";
 
-dotenv.config();
+if (process.env.NODE_ENV !== "production") {
+  dotenv.config();
+}
 
 const app = express();
-const PORT = 3000;
 
 app.use(express.json());
 
-// Lazy Gemini API Initializer
+/* =========================
+   Gemini Client
+========================= */
+
 function getGeminiClient() {
   const apiKey = process.env.GEMINI_API_KEY;
-  if (!apiKey || apiKey === "MY_GEMINI_API_KEY") {
-    console.warn("GEMINI_API_KEY is not defined or is placeholder. Using smart algorithmic fallbacks.");
+
+  if (!apiKey) {
+    console.warn(
+      "GEMINI_API_KEY tidak ditemukan, menggunakan fallback lokal"
+    );
     return null;
   }
-  return new GoogleGenAI({
-    apiKey,
-    httpOptions: {
-      headers: {
-        'User-Agent': 'aistudio-build',
-      }
-    }
-  });
+
+  try {
+    return new GoogleGenAI({
+      apiKey
+    });
+  } catch (err) {
+    console.error("Gemini init error:", err);
+    return null;
+  }
 }
 
-// Algorithmic fallbacks for Bawang Merah prediction text in Indonesian
-function generateAlgorithmicInterpretation(temp: number, rain: number, usd: number, inflation: number, season: string) {
+/* =========================
+   Fallback AI
+========================= */
+
+function generateAlgorithmicInterpretation(
+  temp: number,
+  rain: number,
+  usd: number,
+  inflation: number,
+  season: string
+) {
   let weatherFactor = "";
-  if (season === "hujan" || rain > 15) {
-    weatherFactor = "curah hujan yang tinggi memicu risiko pembusukan akar dan serangan patogen jamur, menghambat proses pematangan buah.";
-  } else {
-    weatherFactor = "suhu dan iklim kemarau yang stabil mendukung pengeringan pasca-panen yang ideal di daerah sentra produksi Minahasa.";
-  }
-
-  let financialFactor = "";
-  if (usd > 15600) {
-    financialFactor = "Tekanan nilai tukar USD/IDR sebesar Rp " + usd.toLocaleString("id-ID") + " meningkatkan biaya impor pupuk serta sarana produksi pertanian.";
-  } else {
-    financialFactor = "Stabilitas nilai tukar Rupiah membantu menjaga biaya input pertanian hortikultura tetap terkendali.";
-  }
-
+  let economyFactor = "";
   let conclusion = "";
-  if (rain > 15 || season === "hujan" || usd > 15700) {
-    conclusion = " Akibatnya, pasokan diproyeksikan akan sedikit tertekan dalam 14 hari ke depan, mendorong tren harga merangkak naik menuju kisaran harga Rp 42.000 hingga Rp 45.000 per kilogram.";
+
+  if (season === "hujan" || rain > 15) {
+    weatherFactor =
+      "curah hujan tinggi berpotensi meningkatkan risiko pembusukan dan mengganggu kualitas panen";
   } else {
-    conclusion = " Hal ini memicu stabilitas harga lokal di tingkat pengecer dengan fluktuasi minor yang berkisar di bawah Rp 36.000 per kilogram.";
+    weatherFactor =
+      "kondisi cuaca yang lebih kering mendukung proses panen dan penyimpanan";
   }
 
-  return `Analisis model mengidentifikasi bahwa kombinasi ${weatherFactor} ${financialFactor}${conclusion}`;
+  if (usd > 15600) {
+    economyFactor =
+      "pelemahan rupiah meningkatkan biaya pupuk dan sarana produksi";
+  } else {
+    economyFactor =
+      "stabilitas rupiah membantu menjaga biaya produksi";
+  }
+
+  if (rain > 15 || usd > 15700) {
+    conclusion =
+      "Pasokan diperkirakan sedikit tertekan sehingga harga berpotensi naik dalam beberapa hari ke depan.";
+  } else {
+    conclusion =
+      "Pasokan relatif stabil sehingga fluktuasi harga diperkirakan terbatas.";
+  }
+
+  return `Analisis model mengidentifikasi bahwa ${weatherFactor}. ${economyFactor}. ${conclusion}`;
 }
 
-// Prediction and Analysis Endpoint
+/* =========================
+   API
+========================= */
+
 app.post("/api/predict", async (req, res) => {
   try {
-    const { temperature = 27.4, rainfall = 12.5, usdIdr = 15680, inflation = 3.1, season = "hujan" } = req.body;
+    const {
+      temperature = 27.4,
+      rainfall = 12.5,
+      usdIdr = 15680,
+      inflation = 3.1,
+      season = "hujan"
+    } = req.body;
 
-    const tempVal = parseFloat(temperature);
-    const rainVal = parseFloat(rainfall);
-    const usdVal = parseFloat(usdIdr);
-    const infVal = parseFloat(inflation);
+    const tempVal = Number(temperature);
+    const rainVal = Number(rainfall);
+    const usdVal = Number(usdIdr);
+    const infVal = Number(inflation);
 
-    // Compute dynamic prices based on inputs to make the dashboard fully interactive and responsive
-    // Base prices for 14-day window (7 historical, 1 today, 6 prediction)
+    /* ==========
+       Price Logic
+    ========== */
+
     const basePrice = 36000;
-    
-    // Impact factors
-    const tempImpact = Math.max(0, (tempVal - 26) * 450); // elevated temp increases price
-    const rainImpact = rainVal * 320; // rainfall rises price
-    const usdImpact = Math.max(0, (usdVal - 15000) * 1.2); // currency cost translation
-    const seasonMultiplier = season === "hujan" ? 1.15 : 0.92;
-    const inflationMultiplier = 1 + (infVal / 100);
 
-    const calculatedBaseTomorrow = (basePrice + tempImpact + rainImpact + usdImpact) * seasonMultiplier * inflationMultiplier;
-    
-    // Generate dates & price line
-    const today = new Date();
+    const tempImpact =
+      Math.max(0, (tempVal - 26) * 450);
+
+    const rainImpact =
+      rainVal * 320;
+
+    const usdImpact =
+      Math.max(0, (usdVal - 15000) * 1.2);
+
+    const seasonMultiplier =
+      season === "hujan"
+        ? 1.15
+        : 0.92;
+
+    const inflationMultiplier =
+      1 + infVal / 100;
+
+    const predictedBase =
+      (
+        basePrice +
+        tempImpact +
+        rainImpact +
+        usdImpact
+      ) *
+      seasonMultiplier *
+      inflationMultiplier;
+
     const resultPrices = [];
 
-    // Historical 7 days (T-7 to T-1) with actual trend + minor noise
+    const today = new Date();
+
     for (let i = 7; i > 0; i--) {
-      const dateObj = new Date();
-      dateObj.setDate(today.getDate() - i);
-      const rawPrice = basePrice + (7 - i) * 350 - (Math.sin(i) * 600);
+      const d = new Date();
+
+      d.setDate(today.getDate() - i);
+
       resultPrices.push({
-        date: dateObj.toLocaleDateString("id-ID", { day: "numeric", month: "short" }),
-        price: Math.round(rawPrice / 100) * 100,
+        date: d.toLocaleDateString("id-ID", {
+          day: "numeric",
+          month: "short"
+        }),
+        price:
+          Math.round(
+            (basePrice +
+              (7 - i) * 350 -
+              Math.sin(i) * 600) /
+              100
+          ) * 100,
         isPrediction: false
       });
     }
 
-    // Today (T-0)
+    const tomorrowPrice =
+      Math.round(predictedBase / 100) * 100;
+
     resultPrices.push({
       date: "Hari Ini",
-      price: Math.round((calculatedBaseTomorrow * 0.98) / 100) * 100,
+      price: tomorrowPrice,
       isPrediction: false
     });
 
-    // Prediction 7 days (T+1 to T+7)
-    // Starting from standard tomorrow price and scaling outwards based on trends
-    const tomorrowPriceVal = Math.round(calculatedBaseTomorrow / 100) * 100;
-    const peakPriceVal = Math.round((calculatedBaseTomorrow * (1 + (tempImpact / 35000) + (rainVal / 100))) / 100) * 100;
-
     for (let i = 1; i <= 7; i++) {
-      const dateObj = new Date();
-      dateObj.setDate(today.getDate() + i);
-      const trendFactor = i / 7;
-      // Interpolate with slight curve
-      const calculatedPrice = tomorrowPriceVal + (peakPriceVal - tomorrowPriceVal) * Math.sin(trendFactor * (Math.PI / 2)) + (Math.cos(i) * 300);
       resultPrices.push({
         date: `T+${i}`,
-        price: Math.round(calculatedPrice / 100) * 100,
+        price:
+          Math.round(
+            (tomorrowPrice +
+              Math.sin(i) * 1000) /
+              100
+          ) * 100,
         isPrediction: true
       });
     }
 
-    // Calculate percentage change compared to 7-day historical average
-    const sumHistorical = resultPrices.filter(p => !p.isPrediction).reduce((sum, p) => sum + p.price, 0);
-    const avgHistorical = sumHistorical / resultPrices.filter(p => !p.isPrediction).length;
-    const percentageChange = parseFloat(((tomorrowPriceVal - avgHistorical) / avgHistorical * 100).toFixed(1));
+    const historical =
+      resultPrices.filter(
+        (p) => !p.isPrediction
+      );
 
-    // Dynamic Reliability rating based on extreme values (lower reliability under bizarre environmental factors)
+    const avgHistorical =
+      historical.reduce(
+        (sum, p) => sum + p.price,
+        0
+      ) / historical.length;
+
+    const percentageChange =
+      Number(
+        (
+          ((tomorrowPrice -
+            avgHistorical) /
+            avgHistorical) *
+          100
+        ).toFixed(1)
+      );
+
     let reliability = 94.8;
-    if (rainVal > 25 || tempVal > 33 || tempVal < 20) {
+
+    if (
+      rainVal > 25 ||
+      tempVal > 33
+    ) {
       reliability = 89.2;
-    } else if (usdVal > 16500) {
-      reliability = 91.5;
     }
 
-    // Call Gemini API server-side for personalized interpretation
+    /* ==========
+       Gemini AI
+    ========== */
+
     let aiInterpretation = "";
+
     const ai = getGeminiClient();
 
     if (ai) {
       try {
-        const prompt = `Anda adalah sistem AI peramal komoditas AgroVista Sulawesi. Tolong berikan analisis singkat menggunakan Bahasa Indonesia yang formal dan profesional mengenai faktor penentu harga Bawang Merah saat ini berdasarkan data input berikut:
-        - Suhu Udara: ${tempVal.toFixed(1)}°C (normal: 25-28°C)
-        - Curah Hujan: ${rainVal.toFixed(1)} mm
-        - Nilai Tukar USD/IDR: Rp ${usdVal.toLocaleString("id-ID")}
-        - Inflasi Regional: ${infVal.toFixed(1)}%
-        - Musim Saat Ini: Musim ${season === "hujan" ? "Hujan" : "Kemarau"}
-        
-        Berikan prediksi dampaknya dalam maksimal 80 kata. Jelaskan bagaimana faktor cuaca (${season === "hujan" ? 'basah membusukkan bawang' : 'kering menyuburkan bawang'}) dan ekonomi (${usdVal > 15600 ? 'pupuk mahal akibat rupiah melemah' : 'rupiah stabil'}) memengaruhi pasokan bawang dan mengapa harga diproyeksikan akan ${tomorrowPriceVal > avgHistorical ? 'naik' : 'turun/stabil'}. Mulailah penjelasan dengan kalimat 'Analisis model mengidentifikasi bahwa...' dan selesaikan tanpa mengulangi statistik mentah secara berlebihan.`;
+        const prompt = `
+Anda adalah analis komoditas bawang merah Indonesia.
 
-        const response = await ai.models.generateContent({
-          model: "gemini-3.5-flash",
-          contents: prompt,
-          config: {
-            temperature: 0.7,
-            systemInstruction: "Anda adalah analis agribisnis dan komoditas bawang merah Sulawesi Utara yang kritis, informatif, dan ringkas.",
-          }
-        });
+Data:
+- Suhu: ${tempVal}°C
+- Curah hujan: ${rainVal} mm
+- USD/IDR: ${usdVal}
+- Inflasi: ${infVal}%
+- Musim: ${season}
 
-        if (response && response.text) {
-          aiInterpretation = response.text.trim();
-        }
-      } catch (geminiError) {
-        console.error("Gemini API calling failed, falling back to algorithmic response:", geminiError);
-        aiInterpretation = generateAlgorithmicInterpretation(tempVal, rainVal, usdVal, infVal, season);
+Buat analisis maksimal 80 kata.
+Mulai dengan:
+"Analisis model mengidentifikasi bahwa..."
+`;
+
+        const response =
+          await ai.models.generateContent({
+            model: "gemini-2.5-flash",
+            contents: prompt
+          });
+
+        aiInterpretation =
+          response.text?.trim() || "";
+      } catch (err) {
+        console.error(
+          "Gemini Error:",
+          err
+        );
+
+        aiInterpretation =
+          generateAlgorithmicInterpretation(
+            tempVal,
+            rainVal,
+            usdVal,
+            infVal,
+            season
+          );
       }
     }
 
     if (!aiInterpretation) {
-      aiInterpretation = generateAlgorithmicInterpretation(tempVal, rainVal, usdVal, infVal, season);
+      aiInterpretation =
+        generateAlgorithmicInterpretation(
+          tempVal,
+          rainVal,
+          usdVal,
+          infVal,
+          season
+        );
     }
 
-    res.json({
+    return res.json({
       inputs: {
         temperature: tempVal,
         rainfall: rainVal,
@@ -176,42 +276,90 @@ app.post("/api/predict", async (req, res) => {
         inflation: infVal,
         season
       },
-      historicalPrices: resultPrices.filter(p => !p.isPrediction),
-      predictedPrices: resultPrices.filter(p => p.isPrediction),
-      tomorrowPrice: tomorrowPriceVal,
+
+      historicalPrices:
+        resultPrices.filter(
+          (p) => !p.isPrediction
+        ),
+
+      predictedPrices:
+        resultPrices.filter(
+          (p) => p.isPrediction
+        ),
+
+      tomorrowPrice,
       percentageChange,
       reliability,
       aiInterpretation
     });
 
-  } catch (error) {
-    console.error("Prediction API Error:", error);
-    res.status(500).json({ error: "Terjadi kesalahan internal saat memproses prediksi." });
+  } catch (error: any) {
+    console.error(
+      "Prediction API Error:",
+      error
+    );
+
+    return res.status(500).json({
+      error:
+        "Terjadi kesalahan internal",
+      message: error?.message
+    });
   }
 });
 
-// Configure Vite middleware
+/* =========================
+   Vite Dev + Vercel
+========================= */
+
 async function start() {
-  if (process.env.NODE_ENV !== "production") {
-    const vite = await createViteServer({
-      server: { middlewareMode: true },
-      appType: "spa",
-    });
+  if (
+    process.env.NODE_ENV !==
+    "production"
+  ) {
+    const vite =
+      await createViteServer({
+        server: {
+          middlewareMode: true
+        },
+        appType: "spa"
+      });
+
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
-    app.use(express.static(distPath));
-    app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+    const distPath = path.join(
+      process.cwd(),
+      "dist"
+    );
+
+    app.use(
+      express.static(distPath)
+    );
+
+    app.get("*", (_, res) => {
+      res.sendFile(
+        path.join(
+          distPath,
+          "index.html"
+        )
+      );
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+  const PORT =
+    process.env.PORT || 3000;
+
+  app.listen(PORT, () => {
+    console.log(
+      `Server running on ${PORT}`
+    );
   });
 }
 
-if (process.env.VERCEL !== "1") {
+/* Vercel: jangan jalankan listen */
+
+if (
+  process.env.VERCEL !== "1"
+) {
   start();
 }
 
